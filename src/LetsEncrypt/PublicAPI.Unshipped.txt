@@ -1,0 +1,2 @@
+McMaster.AspNetCore.LetsEncrypt.LetsEncryptOptions.DaysBeforeExpirationToRenew.get -> int
+McMaster.AspNetCore.LetsEncrypt.LetsEncryptOptions.DaysBeforeExpirationToRenew.set -> void

@@ -13,7 +13,6 @@ using Certes.Acme.Resource;
 using Certes.Pkcs;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
-using Microsoft.Extensions.Options;
 using Newtonsoft.Json;
 
 #if NETSTANDARD2_0
@@ -24,28 +23,27 @@ namespace McMaster.AspNetCore.LetsEncrypt.Internal
 {
     internal class CertificateFactory : IDisposable
     {
-        private readonly IOptions<LetsEncryptOptions> _options;
+        private readonly LetsEncryptOptions _options;
         private readonly IHttpChallengeResponseStore _challengeStore;
         private readonly ILogger _logger;
         private readonly AcmeClient _client;
 
         public CertificateFactory(
-            IOptions<LetsEncryptOptions> options,
+            LetsEncryptOptions options,
             IHttpChallengeResponseStore challengeStore,
             ILogger logger,
             IHostEnvironment env)
         {
-            _options = options;
+            this._options = options;
             _challengeStore = challengeStore;
             _logger = logger;
-            var acmeUrl = _options.Value.GetAcmeServer(env);
+            var acmeUrl = this._options.GetAcmeServer(env);
             _client = new AcmeClient(acmeUrl);
         }
 
         public async Task RegisterUserAsync(CancellationToken cancellationToken)
         {
-            var options = _options.Value;
-            var registration = "mailto:" + options.EmailAddress;
+            var registration = "mailto:" + _options.EmailAddress;
 
             _logger.LogInformation("Creating certificate registration for {registration}", registration);
             var account = await _client.NewRegistraton(registration);
@@ -69,7 +67,7 @@ namespace McMaster.AspNetCore.LetsEncrypt.Internal
 
         private IEnumerable<Task> BeginValidateAllDomains(CancellationToken cancellationToken)
         {
-            foreach (var domainName in _options.Value.DomainNames)
+            foreach (var domainName in _options.DomainNames)
             {
                 yield return ValidateDomainOwnershipAsync(domainName, cancellationToken);
             }
@@ -77,7 +75,7 @@ namespace McMaster.AspNetCore.LetsEncrypt.Internal
 
         private void EnsureAgreementToTermsOfServices(Uri tosUri)
         {
-            if (_options.Value.AcceptTermsOfService)
+            if (_options.AcceptTermsOfService)
             {
                 return;
             }
@@ -205,12 +203,12 @@ namespace McMaster.AspNetCore.LetsEncrypt.Internal
         private async Task<X509Certificate2> CompleteCertificateRequestAsync(CancellationToken cancellationToken)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            var distinguishedName = "CN=" + _options.Value.DomainNames[0];
+            var distinguishedName = "CN=" + _options.DomainNames[0];
             _logger.LogDebug("Creating cert for {distinguishedName}", distinguishedName);
 
             var csb = new CertificationRequestBuilder();
             csb.AddName(distinguishedName);
-            foreach (var name in _options.Value.DomainNames.Skip(1))
+            foreach (var name in _options.DomainNames.Skip(1))
             {
                 csb.SubjectAlternativeNames.Add(name);
             }
@@ -220,7 +218,7 @@ namespace McMaster.AspNetCore.LetsEncrypt.Internal
             _logger.LogResponse("NewCertificate", acmeCert);
 
             var pfxBuilder = acmeCert.ToPfx();
-            var pfx = pfxBuilder.Build("Let's Encrypt - " + _options.Value.DomainNames, string.Empty);
+            var pfx = pfxBuilder.Build("Let's Encrypt - " + _options.DomainNames, string.Empty);
             return new X509Certificate2(pfx, string.Empty, X509KeyStorageFlags.Exportable);
         }
 

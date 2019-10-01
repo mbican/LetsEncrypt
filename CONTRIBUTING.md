@@ -27,7 +27,7 @@ I recommend the following steps.
 4. Update Let's Encrypt Set your app to use Let's Encrypt staging environment so you don't hit rate limits in generating certificates.
 
 ```csharp
-    .UseLetsEncrypt(o =>
+    .AddLetsEncrypt(o =>
     {
         o.DomainNames = new[] { "TMP.ngrok.io" };
         o.UseStagingServer = true; // <--- use staging

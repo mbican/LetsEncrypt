@@ -35,6 +35,7 @@ namespace McMaster.AspNetCore.LetsEncrypt.Internal
         private readonly IServer _server;
         private readonly IConfiguration _config;
         private volatile bool _hasRegistered;
+        private CancellationTokenSource? _cts;
 
         public AcmeCertificateLoader(
             CertificateSelector selector,
@@ -57,7 +58,13 @@ namespace McMaster.AspNetCore.LetsEncrypt.Internal
         }
 
         public Task StopAsync(CancellationToken cancellationToken)
-            => Task.CompletedTask;
+        {
+            if (_cts != null)
+            {
+                _cts.Cancel();
+            }
+            return Task.CompletedTask;
+        }
 
         public Task StartAsync(CancellationToken cancellationToken)
         {
@@ -83,23 +90,67 @@ namespace McMaster.AspNetCore.LetsEncrypt.Internal
                 return Task.CompletedTask;
             }
 
-            Task.Factory.StartNew(async () =>
+            _cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+
+            Task.Factory.StartNew<Task>(async () =>
             {
                 const string ErrorMessage = "Failed to create certificate";
+                var retries = 5;
+                var renewCert = false;
 
-                try
+                while (!_cts.IsCancellationRequested && retries > 0)
                 {
-                    await LoadCerts(cancellationToken);
+                    var renewDelay = TimeSpan.FromSeconds(30); // in the event of error, set initial retry to run soon
+                    var now = DateTime.Now;
+                    var success = true;
+                    try
+                    {
+                        var cert = await LoadCert(renewCert, cancellationToken);
+
+                        var expirationBuffer = TimeSpan.FromDays(_options.Value.DaysBeforeExpirationToRenew);
+                        var expirationDate = cert.NotAfter;
+                        renewDelay = expirationDate - now - expirationBuffer;
+                    }
+                    catch (AggregateException ex) when (ex.InnerException != null)
+                    {
+                        _logger.LogError(0, ex.InnerException, ErrorMessage);
+                        success = false;
+
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogError(0, ex, ErrorMessage);
+                        success = false;
+                    }
+
+                    if (_cts.IsCancellationRequested)
+                    {
+                        return;
+                    }
+
+
+                    if (!success)
+                    {
+                        retries--;
+                        _logger.LogInformation("Failed to create Let's Encrypt certificate. Will retry {retries} more times.", retries);
+                        renewDelay = TimeSpan.FromTicks(renewDelay.Ticks * 2);
+                    }
+
+                    try
+                    {
+                        renewCert = true;
+                        var renewOn = now + renewDelay;
+                        _logger.LogInformation("Setting delayed task to renew Let's Encrypt certificate at {renewDateTime}", renewOn);
+                        await Task.Delay(renewDelay, _cts.Token);
+                    }
+                    catch (TaskCanceledException)
+                    {
+                        _logger.LogInformation("Let's Encrypt certificate renewal canceled.");
+                        return;
+                    }
+
                 }
-                catch (AggregateException ex) when (ex.InnerException != null)
-                {
-                    _logger.LogError(0, ex.InnerException, ErrorMessage);
-                }
-                catch (Exception ex)
-                {
-                    _logger.LogError(0, ex, ErrorMessage);
-                }
-            });
+            }, TaskCreationOptions.LongRunning | TaskCreationOptions.RunContinuationsAsynchronously);
 
             return Task.CompletedTask;
         }
@@ -111,43 +162,34 @@ namespace McMaster.AspNetCore.LetsEncrypt.Internal
                 .Any();
         }
 
-        private async Task LoadCerts(CancellationToken cancellationToken)
+        private async Task<X509Certificate2> LoadCert(bool renew, CancellationToken cancellationToken)
         {
             cancellationToken.ThrowIfCancellationRequested();
+            var options = _options.Value;
+            var primaryDomainName = options.DomainNames[0];
 
-            var errors = new List<Exception>();
-
-            using var factory = new CertificateFactory(_options, _challengeStore, _logger, _hostEnvironment);
-
-            try
+            if (!renew)
             {
-                var cert = await GetOrCreateCertificate(factory, cancellationToken);
-                foreach (var domainName in _options.Value.DomainNames)
+                var existingCert = _certificateStore.GetCertificate(primaryDomainName);
+                if (existingCert != null)
                 {
-                    _selector.Use(domainName, cert);
+                    _logger.LogDebug("Certificate for {domainName} already found.", primaryDomainName);
+                    return existingCert;
                 }
             }
-            catch (Exception ex)
+
+            using var factory = new CertificateFactory(options, _challengeStore, _logger, _hostEnvironment);
+            var cert = await CreateCertificate(primaryDomainName, factory, cancellationToken);
+            foreach (var domainName in options.DomainNames)
             {
-                errors.Add(ex);
+                _selector.Use(domainName, cert);
             }
 
-            if (errors.Count > 0)
-            {
-                throw new AggregateException(errors);
-            }
+            return cert;
         }
 
-        private async Task<X509Certificate2> GetOrCreateCertificate(CertificateFactory factory, CancellationToken cancellationToken)
+        private async Task<X509Certificate2> CreateCertificate(string domainName, CertificateFactory factory, CancellationToken cancellationToken)
         {
-            var domainName = _options.Value.DomainNames[0];
-            var cert = _certificateStore.GetCertificate(domainName);
-            if (cert != null)
-            {
-                _logger.LogDebug("Certificate for {hostname} already found.", domainName);
-                return cert;
-            }
-
             if (!_hasRegistered)
             {
                 _hasRegistered = true;
@@ -157,7 +199,7 @@ namespace McMaster.AspNetCore.LetsEncrypt.Internal
             try
             {
                 _logger.LogInformation("Creating certificate for {hostname} using ACME server {acmeServer}", domainName, _options.Value.GetAcmeServer(_hostEnvironment));
-                cert = await factory.CreateCertificateAsync(cancellationToken);
+                var cert = await factory.CreateCertificateAsync(cancellationToken);
                 _logger.LogInformation("Created certificate {subjectName} ({thumbprint})", cert.Subject, cert.Thumbprint);
                 _certificateStore.Save(domainName, cert);
                 return cert;

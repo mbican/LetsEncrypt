@@ -19,6 +19,7 @@ namespace McMaster.AspNetCore.LetsEncrypt
     {
         private Uri? _acmeServer;
         private string[] _domainNames = Array.Empty<string>();
+        private int _daysBeforeExpirationToRenew = 7;
 
         /// <summary>
         /// The domain names for which to generate certificates.
@@ -65,6 +66,25 @@ namespace McMaster.AspNetCore.LetsEncrypt
         /// </summary>
         public X509Certificate2? FallbackCertificate { get; set; }
 
+
+        /// <summary>
+        /// Automatically renew this many days before the certificate expires.
+        /// <para>
+        /// Defaults to 7.
+        /// </para>
+        /// </summary>
+        public int DaysBeforeExpirationToRenew
+        {
+            get => _daysBeforeExpirationToRenew;
+            set
+            {
+                if (value <= 0)
+                {
+                    throw new ArgumentException("Value must be greater than zero", nameof(value));
+                }
+                _daysBeforeExpirationToRenew = value;
+            }
+        }
         /// <summary>
         /// The uri to the server that implements the ACME protocol for certificate generation.
         /// </summary>
